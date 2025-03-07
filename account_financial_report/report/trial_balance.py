@@ -75,8 +75,8 @@ class TrialBalanceReportAccount(models.TransientModel):
     )
     hide_line = fields.Boolean(compute='_compute_hide_line')
     # Data fields, used to keep link with real object.
-    # Sequence is a Char later built with 'parent_path' for groups
-    # and parent_path + account code for accounts
+    # Sequence is a Char later built with 'code_prefix' for groups
+    # and code_prefix + account code for accounts
     sequence = fields.Char(index=True, default='1')
     level = fields.Integer(index=True, default=1)
 
@@ -391,6 +391,9 @@ AND ra.report_id = %s
 
     def _inject_account_group_values(self):
         """Inject report values for report_trial_balance_account"""
+        allowed_groups = self.env["account.group"].search([])
+        if not allowed_groups:
+            return
         query_inject_account_group = """
 INSERT INTO
     report_trial_balance_account
@@ -413,13 +416,17 @@ SELECT
     accgroup.parent_id,
     coalesce(accgroup.code_prefix, accgroup.name),
     accgroup.name,
-    accgroup.parent_path,
+    accgroup.code_prefix,
     accgroup.level
 FROM
-    account_group accgroup"""
+    account_group accgroup
+WHERE
+    accgroup.id in %s
+    """
         query_inject_account_params = (
             self.id,
             self.env.uid,
+            tuple(allowed_groups.ids),
         )
         self.env.cr.execute(query_inject_account_group,
                             query_inject_account_params)
@@ -475,11 +482,19 @@ WHERE report_trial_balance_account.account_group_id = computed.account_group_id
 
     def _add_account_group_account_values(self):
         """Compute values for report_trial_balance_account group in child."""
+        # Since Postgres 14, the argument to array_cat must be
+        # anycompatiblearray instead of anyarray. See
+        # <https://www.postgresql.org/docs/14/release-14.html#id-1.11.6.13.4>.
+        # We detect the version and use the correct type as needed.
+        array_type = (
+            "anycompatiblearray" if self.env.cr.connection.server_version >= 140000
+            else "anyarray"
+        )
         query_update_account_group = """
-DROP AGGREGATE IF EXISTS array_concat_agg(anyarray);
-CREATE AGGREGATE array_concat_agg(anyarray) (
+DROP AGGREGATE IF EXISTS array_concat_agg({array_type});
+CREATE AGGREGATE array_concat_agg({array_type}) (
   SFUNC = array_cat,
-  STYPE = anyarray
+  STYPE = {array_type}
 );
 WITH aggr AS(WITH computed AS (WITH RECURSIVE cte AS (
    SELECT account_group_id, account_group_id AS parent_id,
@@ -509,7 +524,7 @@ SET child_account_ids = aggr.child_account_ids
 FROM aggr
 WHERE report_trial_balance_account.account_group_id = aggr.account_group_id
     AND report_trial_balance_account.report_id = %s
-"""
+""".format(array_type=array_type)
         query_update_account_params = (self.id, self.id, self.id,)
         self.env.cr.execute(query_update_account_group,
                             query_update_account_params)
