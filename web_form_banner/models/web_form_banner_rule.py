@@ -100,6 +100,9 @@ class WebFormBannerRule(models.Model):
                 "relativedelta": relativedelta,
             },
             "timezone": timezone,
+            "float_compare": float_compare,
+            "float_is_zero": float_is_zero,
+            "float_round": float_round,
         }
 
     @api.model
@@ -115,9 +118,6 @@ class WebFormBannerRule(models.Model):
                 "context_today": lambda ts=None: fields.Date.context_today(
                     record, timestamp=ts
                 ),
-                "float_compare": float_compare,
-                "float_is_zero": float_is_zero,
-                "float_round": float_round,
                 "url_for": self._build_form_url,
             }
         )
@@ -126,6 +126,8 @@ class WebFormBannerRule(models.Model):
     @api.model
     def compute_message(self, rule_id, model, res_id):
         """Return {visible, severity, html} for the given rule and record."""
+        lang = self._context.get("lang") or self.env.user.lang
+        self = self.with_context(lang=lang)
         rule = self.browse(int(rule_id)).sudo()
         if not rule.exists() or not rule.active:
             return {"visible": False}
