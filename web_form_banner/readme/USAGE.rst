@@ -1,6 +1,7 @@
 #. Go to *Settings > Tachnical > User Interface > Form Banner Rules* and create a rule.
-#. Choose Model, (optionally) restrict Form Views, set Default Severity, Target XPath
-   (insertion point), Position, and configure the message.
+#. Choose Model, select Trigger Fields (optional), set Default Severity, select Views
+   (optional), update Target XPath (insertion point) and Position, and configure the
+   message.
 #. Save. Open any matching form record—the banner will appear and auto-refresh after
    load/save/reload.
 
@@ -24,6 +25,13 @@ Evaluation context variables available in Message Value Code:
 * `user`: Current user (`env.user`).
 * `ctx`: Copy of the current context (`dict(env.context)`).
 * `record`: Current record (the form's record).
+* `draft`: The persisted field values of the ORM record (before applying the current
+  form's unsaved changes) + the current unsaved changes on trigger fields.
+  Should be used instead of `record` when your rule is triggered dynamically by an
+  update to a trigger field. It doesn't include any values from complex fields
+  (one2many/reference, etc).
+* `record_id`: Integer id of the record being edited, or `False` if the form
+  is creating a new record.
 * `model`: Shortcut to the current model (`env[record._name]`).
 * `url_for(obj)`: Helper that returns a backend form URL for `obj`.
 * `context_today(ts=None)`: User-timezone “today” (date) for reliable date comparisons.
@@ -34,6 +42,19 @@ Evaluation context variables available in Message Value Code:
   comparisons/rounding.
 
 All of the above are injected by the module to the safe_eval locals.
+
+Trigger Fields
+~~~~~~~~~~~~~~
+
+*Trigger Fields* is an optional list of model fields that, when changed in the open
+form, cause the banner to **recompute live**. If left empty, the banner does **not**
+auto-refresh as the user edits the form.
+
+When a trigger fires, the module sends the current draft values to the server, sanitizes
+them, builds an evaluation record, and re-runs your `message_value_code`.
+
+You should use `draft` instead of `record` to access the current form values if your
+rule is triggered based on an update to a trigger field.
 
 Message setting examples:
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -79,7 +100,7 @@ It is also possible to use "convenience placeholders" without an explicit `value
 .. code-block:: python
 
   {
-    "visible": record.amount_total > 30000,
+    "visible": record.amount_total >= 30000,
     "severity": "danger" if record.amount_total >= 100000 else "warning",
     "values": {"amount_total": record.amount_total},
   }
@@ -97,7 +118,7 @@ It is also possible to use "convenience placeholders" without an explicit `value
     "values": {"validity_date": record.validity_date},
   }
 
-**E) Pending activities on a task (uses env)**
+**E) Pending activities on a task (uses `env`)**
 
 * Model: `project.task`
 * Message: `There are ${cnt} pending activities.`
@@ -108,19 +129,30 @@ It is also possible to use "convenience placeholders" without an explicit `value
   cnt = env["mail.activity"].search_count([("res_model","=",record._name),("res_id","=",record.id)])
   result = {"visible": cnt > 0, "values": {"cnt": cnt}}
 
-**F) HTML banner linking to the customer's last sales order**
+**F) Product is missing internal reference (uses trigger fields)**
+
+* Model: `product.template`
+* Trigger Fields: `default_code`
+* Message: `Make sure to set an internal reference!`
+* Message Value Code:
+
+.. code-block:: python
+
+  {"visible": not bool(draft.default_code)}
+
+**G) HTML banner linking to the customer's last sales order (uses trigger fields)**
 
 * Model: `sale.order`
+* Trigger Fields: `partner_id`
 * Message: (leave blank; `html` provided by Message Value Code)
 * Message Value Code (multi-line with `result`):
 
 .. code-block:: python
 
-  last = model.search(
-    [("partner_id", "=", record.partner_id.id), ("id", "<", record.id)],
-    order="date_order desc, id desc",
-    limit=1,
-  )
+  domain = [("partner_id", "=", draft.partner_id.id)]
+  if record_id:
+    domain += [("id", "<", record_id)]
+  last = model.search(domain, order="date_order desc, id desc", limit=1)
   if last:
     html = "<strong>Previous order:</strong> <a href='%s'>%s</a>" % (url_for(last), last.name)
     result = {"visible": True, "html": html}
