@@ -72,6 +72,7 @@ class ReportStatementCommon(models.AbstractModel):
                                       pc.max_date <= %(date_end)s) OR
                                   (pd.id IS NULL AND pc.id IS NULL)
                                 ) AND l.date <= %(date_end)s AND not l.blocked
+                                  AND m.state IN ('posted')
             GROUP BY l.partner_id, l.currency_id, l.date, l.date_maturity,
                                 l.amount_currency, l.balance, l.move_id,
                                 l.company_id, l.id
@@ -275,8 +276,12 @@ class ReportStatementCommon(models.AbstractModel):
             currencies
         )
 
-    @api.multi
-    def _get_report_values(self, docids, data):
+    def _add_currency_line(self, line, currency):
+        return [line]
+
+    @api.model
+    # flake8: noqa: C901
+    def _get_report_values(self, docids, data=None):
         """
         @return: returns a dict of parameters to pass to qweb report.
           the most important pair is {'data': res} which contains all
@@ -340,7 +345,7 @@ class ReportStatementCommon(models.AbstractModel):
         else:
             bucket_labels = {}
 
-        # organise and format for report
+        # organize and format for report
         format_date = self._format_date_to_partner_lang
         partners_to_remove = set()
         for partner_id in partner_ids:
@@ -384,7 +389,9 @@ class ReportStatementCommon(models.AbstractModel):
                     line['date_maturity'],
                     date_formats.get(partner_id, default_fmt)
                 )
-                line_currency['lines'].append(line)
+                line_currency['lines'].extend(
+                    self._add_currency_line(line, currencies[line['currency_id']])
+                )
 
             if data['show_aging_buckets']:
                 for line in buckets[partner_id]:
