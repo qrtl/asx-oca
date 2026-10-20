@@ -1,6 +1,7 @@
 # Copyright 2015 Therp BV <https://therp.nl>
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 from odoo.tests.common import TransactionCase
+from odoo.tools import mute_logger, sql
 
 
 class AuditlogCommon(object):
@@ -80,6 +81,106 @@ class AuditlogCommon(object):
             ('res_id', '=', testgroup4.id),
         ]).ensure_one())
 
+    def test_LogCreation4(self):
+        """Fourth test, create several records at once (with create multi
+        feature starting from Odoo 12) and check that the same number of logs
+        has been generated.
+        """
+
+        self.groups_rule.subscribe()
+
+        auditlog_log = self.env['auditlog.log']
+        groups_vals = [
+            {'name': 'testgroup1'},
+            {'name': 'testgroup3'},
+            {'name': 'testgroup2'},
+        ]
+        groups = self.env['res.groups'].create(groups_vals)
+        # Ensure that the recordset returns is in the same order
+        # than list of vals
+        expected_names = ['testgroup1', 'testgroup3', 'testgroup2']
+        self.assertEqual(groups.mapped('name'), expected_names)
+
+        logs = auditlog_log.search([
+            ('model_id', '=', self.groups_model_id),
+            ('method', '=', 'create'),
+            ('res_id', 'in', groups.ids),
+        ])
+        self.assertEqual(len(logs), len(groups))
+
+    def test_LogCreation5(self):
+        """Fifth test, create a record and check that the same number of logs
+        has been generated. And then delete it, check that it has created log
+        with 0 fields updated.
+        """
+        self.groups_rule.subscribe()
+
+        auditlog_log = self.env['auditlog.log']
+        testgroup5 = self.env['res.groups'].create({
+            'name': 'testgroup5',
+        })
+        self.assertTrue(auditlog_log.search([
+            ('model_id', '=', self.groups_model_id),
+            ('method', '=', 'create'),
+            ('res_id', '=', testgroup5.id),
+        ]).ensure_one())
+        testgroup5.unlink()
+        log_record = auditlog_log.search([
+            ('model_id', '=', self.groups_model_id),
+            ('method', '=', 'unlink'),
+            ('res_id', '=', testgroup5.id),
+        ]).ensure_one()
+        self.assertTrue(log_record)
+        if not self.groups_rule.capture_record:
+            self.assertEqual(len(log_record.line_ids), 0)
+
+    def test_LogCreation6(self):
+        """Six test, create a record and check that the same number of logs
+        has been generated. And then delete it, check that it has created log
+        with x fields updated as per rule
+        """
+        self.groups_rule.subscribe()
+
+        auditlog_log = self.env['auditlog.log']
+        testgroup6 = self.env['res.groups'].create({
+            'name': 'testgroup6',
+        })
+        self.assertTrue(auditlog_log.search([
+            ('model_id', '=', self.groups_model_id),
+            ('method', '=', 'create'),
+            ('res_id', '=', testgroup6.id),
+        ]).ensure_one())
+        testgroup6.unlink()
+        log_record = auditlog_log.search([
+            ('model_id', '=', self.groups_model_id),
+            ('method', '=', 'unlink'),
+            ('res_id', '=', testgroup6.id),
+        ]).ensure_one()
+        self.assertTrue(log_record)
+        if self.groups_rule.capture_record:
+            self.assertTrue(len(log_record.line_ids) > 0)
+
+    def test_LogDuringUpdate(self):
+        """Seventh test, check that no exception comes when we log data
+        and the auditlog rule model is not up to date"""
+        Rule = self.env["auditlog.rule"]
+        field_name = "capture_record"
+        temp_name = "temp_hidden_" + field_name
+        sql.rename_column(self.env.cr, Rule._table, field_name, temp_name)
+
+        with mute_logger('odoo.sql_db', 'odoo.addons.auditlog.models.rule'):
+            self.groups_rule.subscribe()
+            testgroup7 = self.env['res.groups'].create({
+                'name': 'testgroup7',
+            })
+
+        self.assertFalse(self.env['auditlog.log'].search([
+            ('model_id', '=', self.groups_model_id),
+            ('method', '=', 'create'),
+            ('res_id', '=', testgroup7.id),
+        ]))
+        sql.rename_column(self.env.cr, Rule._table, temp_name, field_name)
+
 
 class TestAuditlogFull(TransactionCase, AuditlogCommon):
 
@@ -119,3 +220,24 @@ class TestAuditlogFast(TransactionCase, AuditlogCommon):
     def tearDown(self):
         self.groups_rule.unlink()
         super(TestAuditlogFast, self).tearDown()
+
+
+class TestAuditlogFullCaptureRecord(TransactionCase, AuditlogCommon):
+
+    def setUp(self):
+        super(TestAuditlogFullCaptureRecord, self).setUp()
+        self.groups_model_id = self.env.ref('base.model_res_groups').id
+        self.groups_rule = self.env['auditlog.rule'].create({
+            'name': 'testrule for groups with capture unlink record',
+            'model_id': self.groups_model_id,
+            'log_read': True,
+            'log_create': True,
+            'log_write': True,
+            'log_unlink': True,
+            'log_type': 'full',
+            'capture_record': True,
+        })
+
+    def tearDown(self):
+        self.groups_rule.unlink()
+        super(TestAuditlogFullCaptureRecord, self).tearDown()
